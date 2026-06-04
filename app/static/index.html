@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Учет ЖКХ - Авторизация</title>
+    <link rel="stylesheet" href="/static/style.css?v=7.0">
+</head>
+<body>
+    <div class="auth-wrapper">
+        <div class="auth-container" style="max-width: 480px;">
+            <div class="auth-brand">
+                <h1>Учет коммунальных услуг</h1>
+                <p>Интеллектуальная система анализа и прогнозирования</p>
+            </div>
+            <div class="tabs">
+                <button id="tab-login" class="active" onclick="switchTab('login')">Вход</button>
+                <button id="tab-register" onclick="switchTab('register')">Регистрация</button>
+            </div>
+            
+            <form id="login-form" class="auth-form" onsubmit="handleLogin(event)">
+                <div class="input-group">
+                    <label>Имя пользователя</label>
+                    <input type="text" id="login-username" required autocomplete="username">
+                </div>
+                <div class="input-group">
+                    <label>Пароль</label>
+                    <input type="password" id="login-password" required autocomplete="current-password">
+                </div>
+                <button type="submit">Войти в систему</button>
+            </form>
+
+            <form id="register-form" class="auth-form" onsubmit="handleRegister(event)" style="display: none;">
+                <div class="input-group">
+                    <label>Имя пользователя</label>
+                    <input type="text" id="reg-username" required autocomplete="username">
+                </div>
+                <div class="input-group">
+                    <label>Электронная почта</label>
+                    <input type="email" id="reg-email" required autocomplete="email">
+                </div>
+                
+                <div class="input-group">
+                    <label>Адрес проживания</label>
+                    <input type="text" id="reg-street" required placeholder="Улица (например, Московское шоссе)" style="margin-bottom: 8px;">
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+                        <input type="text" id="reg-house" required placeholder="Дом">
+                        <input type="text" id="reg-apartment" placeholder="Квартира">
+                        <input type="text" id="reg-floor" placeholder="Этаж">
+                    </div>
+                </div>
+
+                <div class="input-group">
+                    <label>Пароль</label>
+                    <input type="password" id="reg-password" required autocomplete="new-password">
+                </div>
+                <button type="submit">Создать аккаунт</button>
+            </form>
+            <p id="error-msg" style="color: var(--danger); text-align: center; margin-top: 20px; font-size: 13px; font-weight: 500;"></p>
+        </div>
+    </div>
+    <div id="toast-container" class="toast-container"></div>
+    <script src="/static/app.js?v=7.0"></script>
+</body>
+</html>
