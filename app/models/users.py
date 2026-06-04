@@ -1,5 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, Float
+from sqlalchemy.orm import relationship
 from app.database import Base
+
 
 class User(Base):
     __tablename__ = "users"
@@ -15,3 +17,10 @@ class User(Base):
     monthly_budget = Column(Float, default=0.0)
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
+
+    meters = relationship(
+        "Meter",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )

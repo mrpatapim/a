@@ -3,17 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Личный кабинет - Учет ЖКХ</title>
-    <link rel="stylesheet" href="/static/style.css?v=7.0">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <title>Личный кабинет — Учет ЖКХ</title>
+    <link rel="stylesheet" href="/static/style.css?v=10.0">
+    <script src="/static/vendor/chart.umd.min.js?v=10.0"></script>
 </head>
 <body>
     <div class="layout">
         <div class="sidebar">
-            <div>
-                <h2 style="color: #fff; font-size: 20px; font-weight: 700; letter-spacing: -0.5px;">Система ЖКХ</h2>
-                <div id="sidebar-role" style="font-size: 12px; color: #93c5fd; margin-top: 4px; font-weight: 600; text-transform: uppercase;"></div>
-                
+            <div class="brand-block">
+                <div class="brand-title"><span class="brand-mark">⌂</span> Система ЖКХ</div>
+                <div id="sidebar-role" class="sidebar-role"></div>
+
                 <div class="sidebar-menu" id="menu-user-zones">
                     <button class="menu-item active" onclick="switchView('view-dashboard')">Обзор кабинета</button>
                     <button class="menu-item" onclick="switchView('view-meters')">Приборы учета</button>
@@ -31,38 +31,46 @@
 
             <div id="view-dashboard" class="view-section active">
                 <div class="page-header">
-                    <h1>Сводная аналитика</h1>
+                    <div>
+                        <h1>Сводная аналитика</h1>
+                        <div class="sub">Финансовая картина потребления коммунальных ресурсов</div>
+                    </div>
                 </div>
                 <div class="kpi-grid">
-                    <div class="kpi-card" style="border-left: 4px solid var(--primary);">
+                    <div class="kpi-card accent-primary">
                         <div class="label">Общие затраты за период</div>
                         <div class="value" id="kpi-total-spent">0.00 ₽</div>
                     </div>
-                    <div class="kpi-card" style="border-left: 4px solid var(--success);">
+                    <div class="kpi-card accent-sky">
                         <div class="label">Активные счетчики</div>
                         <div class="value" id="kpi-active-meters">0</div>
                     </div>
                 </div>
-                
+
                 <div class="card" id="budget-card" style="display: none;">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div class="budget-head">
                         <h3>Контроль ежемесячного бюджета</h3>
-                        <button onclick="promptBudgetUpdate()" style="padding: 6px 12px; font-size: 12px; margin: 0; width: auto; background: var(--border); color: var(--text-main);">Изменить лимит</button>
+                        <div style="display:flex; gap:10px; align-items:center;">
+                            <span class="status-pill" id="budget-status" style="color: var(--success);">В пределах лимита</span>
+                            <button class="btn-ghost btn-mini" onclick="promptBudgetUpdate()">Изменить лимит</button>
+                        </div>
                     </div>
-                    <div style="margin-top: 10px;">
-                        <div style="display: flex; justify-content: space-between; font-size: 14px; font-weight: 600;">
-                            <span id="budget-text-spent">Потрачено: 0 ₽</span>
-                            <span id="budget-text-limit">Лимит: 0 ₽</span>
-                        </div>
-                        <div class="progress-container">
-                            <div id="budget-progress" class="progress-bar" style="width: 0%; background-color: var(--success);"></div>
-                        </div>
+                    <p class="card-sub" style="margin-bottom:0;">Начисления за текущий месяц относительно установленного лимита расходов.</p>
+                    <div class="budget-figures">
+                        <span id="budget-text-spent">Начислено за месяц: 0 ₽</span>
+                        <span class="muted" id="budget-text-limit">Лимит: 0 ₽</span>
+                    </div>
+                    <div class="progress-container">
+                        <div id="budget-progress" class="progress-bar" style="width: 0%;"></div>
                     </div>
                 </div>
 
                 <div class="card">
                     <h3>График динамики начислений</h3>
-                    <canvas id="trendChart" width="400" height="160"></canvas>
+                    <p class="card-sub">Помесячная сумма начислений по всем приборам учета.</p>
+                    <div class="chart-box">
+                        <canvas id="trendChart"></canvas>
+                    </div>
                 </div>
                 <div class="card">
                     <h3>Затраты по категориям услуг</h3>
@@ -72,10 +80,11 @@
 
             <div id="view-meters" class="view-section">
                 <div class="page-header">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
                         <h1>Управление приборами учета</h1>
-                        <button onclick="exportUserCSV()" class="btn-success" style="width: auto;">Скачать выписку (CSV)</button>
+                        <div class="sub">Регистрация счетчиков, фиксация показаний и журнал событий</div>
                     </div>
+                    <button onclick="exportUserCSV()" class="btn-export" style="width: auto;">Скачать выписку (CSV)</button>
                 </div>
                 <div class="grid-2x3">
                     <div>
@@ -112,14 +121,14 @@
                                     <label>Текущее значение прибора</label>
                                     <input type="number" step="0.01" id="reading-value" required>
                                 </div>
-                                <button type="submit" class="btn-success">Зафиксировать данные</button>
+                                <button type="submit">Зафиксировать данные</button>
                             </form>
                         </div>
                     </div>
                     <div>
                         <div class="card">
                             <h3>Журнал фиксации и удаление ошибок</h3>
-                            <div id="readings-history-list" class="item-list" style="max-height: 520px; overflow-y: auto;"></div>
+                            <div id="readings-history-list" class="item-list" style="max-height: 560px; overflow-y: auto;"></div>
                         </div>
                     </div>
                 </div>
@@ -127,39 +136,71 @@
 
             <div id="view-forecast" class="view-section">
                 <div class="page-header">
-                    <h1>Предиктивный расчет расходов</h1>
+                    <div>
+                        <h1>Предиктивный расчет расходов</h1>
+                        <div class="sub">Машинное обучение для оценки потребления на месяц вперед</div>
+                    </div>
                 </div>
-                <div class="card" style="background: linear-gradient(145deg, #ffffff, #dbeafe); border-left: 4px solid var(--primary);">
-                    <h3 style="color: var(--primary);">Моделирование потребления на 30 дней вперед</h3>
-                    <p style="color: var(--text-muted); font-size: 14px; margin-bottom: 20px;">
-                        Алгоритм машинного обучения Scikit-Learn анализирует временной интервал и выстраивает математическую модель линейного тренда на основе ранее внесенной истории.
+                <div class="card">
+                    <h3>Моделирование потребления на 30 дней вперед</h3>
+                    <p class="card-sub">
+                        Алгоритм Scikit-Learn анализирует временной интервал и выстраивает модель линейного тренда на основе ранее внесенной истории показаний.
                     </p>
                     <button onclick="loadForecast()" style="width: auto;">Запустить расчет модели</button>
-                    <div id="forecast-result" class="item-list" style="margin-top: 25px;"></div>
+                    <div id="forecast-result" class="item-list" style="margin-top: 22px;"></div>
                 </div>
             </div>
 
             <div id="view-admin" class="view-section">
                 <div class="page-header">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
                         <h1>Управление системой</h1>
-                        <button onclick="exportAdminCSV()" class="btn-success" style="width: auto;">Экспорт базы (CSV)</button>
+                        <div class="sub">Мониторинг жилого фонда, аудит и выгрузка данных</div>
                     </div>
+                    <button onclick="exportAdminCSV()" class="btn-export" style="width: auto;">Экспорт базы (CSV)</button>
                 </div>
                 <div class="kpi-grid">
-                    <div class="kpi-card" style="border-left: 4px solid var(--primary);">
+                    <div class="kpi-card accent-navy">
                         <div class="label">Зарегистрировано жильцов</div>
                         <div class="value" id="admin-total-users">0</div>
                     </div>
-                    <div class="kpi-card" style="border-left: 4px solid var(--success);">
+                    <div class="kpi-card accent-primary">
                         <div class="label">Приборов учета в базе</div>
                         <div class="value" id="admin-total-meters">0</div>
                     </div>
+                    <div class="kpi-card accent-sky">
+                        <div class="label">Внесено показаний</div>
+                        <div class="value" id="admin-total-readings">0</div>
+                    </div>
+                    <div class="kpi-card accent-azure">
+                        <div class="label">Суммарная выручка</div>
+                        <div class="value" id="admin-total-revenue">0 ₽</div>
+                    </div>
                 </div>
-                
+
+                <div class="card">
+                    <h3>ГИС-карта жилого фонда — Самара</h3>
+                    <p class="card-sub">Интерактивная карта расселения жильцов. Перетаскивайте карту мышью, используйте масштаб и кликните по метке для просмотра карточки жильца.</p>
+                    <div class="map-viewport" id="map-viewport">
+                        <canvas id="samaraMap"></canvas>
+                        <div class="map-hint">Перетаскивание · Масштаб · Клик по метке</div>
+                        <div class="map-controls">
+                            <button class="map-btn" title="Приблизить" onclick="mapZoom(1)">+</button>
+                            <button class="map-btn" title="Отдалить" onclick="mapZoom(-1)">−</button>
+                            <button class="map-btn" title="Сбросить вид" onclick="mapResetView()">⟳</button>
+                        </div>
+                        <div class="map-legend">
+                            <div class="legend-row"><span class="legend-dot resident"></span> Метка жильца (адрес из БД)</div>
+                            <div class="legend-row"><span class="legend-dot river"></span> Река Волга / акватория</div>
+                        </div>
+                        <div id="map-balloon" class="map-balloon" style="display: none;"></div>
+                    </div>
+                </div>
+
                 <div class="card">
                     <h3>Структура общей выручки по услугам</h3>
-                    <div style="height: 250px; display: flex; justify-content: center;">
+                    <p class="card-sub">Распределение начислений по категориям коммунальных услуг.</p>
+                    <div class="chart-box is-doughnut">
                         <canvas id="revenueChart"></canvas>
                     </div>
                 </div>
@@ -167,12 +208,12 @@
                 <div class="grid-2x3">
                     <div class="card">
                         <h3>Список пользователей системы</h3>
-                        <div id="admin-users-list" class="item-list" style="max-height: 500px; overflow-y: auto;"></div>
+                        <div id="admin-users-list" class="item-list" style="max-height: 520px; overflow-y: auto;"></div>
                     </div>
                     <div class="card">
                         <h3>Аудит приборов учета</h3>
                         <div id="admin-user-meters-zone" class="item-list">
-                            <p style="color: var(--text-muted); font-size: 14px;">Выберите учетную запись пользователя для вывода технической информации.</p>
+                            <p class="empty-note">Выберите учетную запись пользователя для вывода технической информации.</p>
                         </div>
                     </div>
                 </div>
@@ -180,7 +221,7 @@
         </div>
     </div>
     <div id="toast-container" class="toast-container"></div>
-    <script src="/static/app.js?v=7.0"></script>
+    <script src="/static/app.js?v=10.0"></script>
     <script>
         initDashboard();
     </script>
