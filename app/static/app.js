@@ -1,4 +1,5 @@
 const API_URL = "";
+const YANDEX_API_KEY = "";
 const BLUE_SCALE = ["#0b1f4d", "#1e40af", "#1d4ed8", "#2563eb", "#3b82f6", "#0ea5e9", "#60a5fa", "#93c5fd"];
 
 function authHeaders(json) {
@@ -690,6 +691,206 @@ async function exportAdminCSV() {
     showToast("Глобальный дамп базы выгружен в CSV");
 }
 
+const SAMARA_CENTER = [53.1981, 50.1136];
+
+const SAMARA_STREETS_LL = {
+    "ул. Куйбышева": [53.1882, 50.0972],
+    "ул. Галактионовская": [53.1929, 50.1003],
+    "ул. Самарская": [53.1962, 50.1041],
+    "ул. Молодогвардейская": [53.1995, 50.1079],
+    "ул. Чапаевская": [53.1944, 50.1016],
+    "ул. Фрунзе": [53.1916, 50.0985],
+    "ул. Ленинградская": [53.1908, 50.0996],
+    "ул. Некрасовская": [53.1897, 50.1002],
+    "ул. Венцека": [53.1872, 50.0958],
+    "ул. Степана Разина": [53.1858, 50.0989],
+    "ул. Полевая": [53.2010, 50.1300],
+    "ул. Осипенко": [53.2090, 50.1500],
+    "ул. Мичурина": [53.2050, 50.1430],
+    "ул. Первомайская": [53.2105, 50.1545],
+    "проспект Ленина": [53.2120, 50.1560],
+    "ул. Революционная": [53.2155, 50.1690],
+    "ул. Ново-Садовая": [53.2169, 50.1665],
+    "Московское шоссе": [53.2275, 50.1900],
+    "ул. Авроры": [53.2230, 50.1700],
+    "ул. Партизанская": [53.2205, 50.1845],
+    "ул. Аэродромная": [53.2200, 50.1760],
+    "ул. Карла Маркса": [53.2200, 50.2000],
+    "ул. XXII Партсъезда": [53.2330, 50.2100],
+    "ул. Ново-Вокзальная": [53.2300, 50.1980],
+    "ул. Советской Армии": [53.2360, 50.2080],
+    "ул. Гагарина": [53.2280, 50.2050],
+    "ул. Победы": [53.2380, 50.2200],
+    "ул. Стара-Загора": [53.2470, 50.2300],
+    "ул. Ташкентская": [53.2540, 50.2520],
+    "ул. Демократическая": [53.2560, 50.2200],
+    "проспект Кирова": [53.2420, 50.2360]
+};
+
+const SAMARA_LL_INDEX = {};
+
+(function buildSamaraLatLngIndex() {
+    for (const name in SAMARA_STREETS_LL) {
+        const normalized = normalizeStreet(name);
+        SAMARA_LL_INDEX[normalized] = SAMARA_STREETS_LL[name];
+        SAMARA_LL_INDEX[stripStreetPrefix(normalized)] = SAMARA_STREETS_LL[name];
+    }
+})();
+
+let yandexMapInstance = null;
+let samaraUsersCache = [];
+
+function loadYandexMaps(timeoutMs) {
+    return new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (callback, argument) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            callback(argument);
+        };
+        const timer = setTimeout(() => finish(reject, new Error("timeout")), timeoutMs);
+        const ready = () => {
+            if (window.ymaps && window.ymaps.Map) {
+                window.ymaps.ready(() => finish(resolve, window.ymaps));
+            } else {
+                finish(reject, new Error("ymaps unavailable"));
+            }
+        };
+        if (window.ymaps && window.ymaps.Map) {
+            ready();
+            return;
+        }
+        let script = document.getElementById("yandex-maps-sdk");
+        if (!script) {
+            script = document.createElement("script");
+            script.id = "yandex-maps-sdk";
+            script.src = "https://api-maps.yandex.ru/2.1/?lang=ru_RU" + (YANDEX_API_KEY ? "&apikey=" + encodeURIComponent(YANDEX_API_KEY) : "");
+            script.async = true;
+            document.head.appendChild(script);
+        }
+        script.addEventListener("load", ready);
+        script.addEventListener("error", () => finish(reject, new Error("script error")));
+    });
+}
+
+function latlngForUser(user) {
+    const normalized = normalizeStreet(user.street);
+    return SAMARA_LL_INDEX[normalized] || SAMARA_LL_INDEX[stripStreetPrefix(normalized)] || null;
+}
+
+function offsetCenter(user) {
+    const hash = hashString((user.street || "") + "|" + (user.username || ""));
+    const deltaLat = ((hash % 220) - 110) / 10000;
+    const deltaLng = (((hash >> 5) % 220) - 110) / 10000;
+    return [SAMARA_CENTER[0] + deltaLat, SAMARA_CENTER[1] + deltaLng];
+}
+
+function renderYandexMap(ymaps, users) {
+    const container = document.getElementById("yandexMap");
+    const canvas = document.getElementById("samaraMap");
+    const viewport = document.getElementById("map-viewport");
+    if (!container) return;
+    if (canvas) canvas.style.display = "none";
+    if (viewport) viewport.classList.add("is-yandex");
+    container.style.display = "block";
+    closeBalloon();
+
+    if (yandexMapInstance) {
+        try { yandexMapInstance.destroy(); } catch (error) { void error; }
+        yandexMapInstance = null;
+    }
+
+    yandexMapInstance = new ymaps.Map(container, {
+        center: SAMARA_CENTER,
+        zoom: 12,
+        controls: ["zoomControl", "typeSelector", "fullscreenControl"]
+    }, { suppressMapOpenBlock: true });
+
+    (users || []).forEach(user => {
+        const direct = latlngForUser(user);
+        if (direct) {
+            addYandexPlacemark(ymaps, user, direct);
+        } else {
+            ymaps.geocode("Самара, " + composeAddress(user), { results: 1 })
+                .then(result => {
+                    const found = result.geoObjects.get(0);
+                    addYandexPlacemark(ymaps, user, found ? found.geometry.getCoordinates() : offsetCenter(user));
+                })
+                .catch(() => addYandexPlacemark(ymaps, user, offsetCenter(user)));
+        }
+    });
+
+    setTimeout(() => {
+        if (!yandexMapInstance) return;
+        try {
+            const bounds = yandexMapInstance.geoObjects.getBounds();
+            if (bounds) yandexMapInstance.setBounds(bounds, { checkZoomRange: true, zoomMargin: 45 });
+        } catch (error) {
+            void error;
+        }
+    }, 1000);
+}
+
+function addYandexPlacemark(ymaps, user, coords) {
+    if (!yandexMapInstance) return;
+    const budgetText = Number(user.monthly_budget) > 0 ? formatMoney(user.monthly_budget) : "не задан";
+    const body = '<div style="font-size:13px;line-height:1.7;">'
+        + "<b>Адрес:</b> " + escapeHtml(composeAddress(user)) + "<br>"
+        + "<b>Email:</b> " + escapeHtml(user.email || "—") + "<br>"
+        + "<b>Лимит/мес:</b> " + budgetText + "</div>";
+    const placemark = new ymaps.Placemark(coords, {
+        balloonContentHeader: escapeHtml(user.username),
+        balloonContentBody: body,
+        hintContent: escapeHtml(user.username)
+    }, {
+        preset: "islands#blueDotIcon",
+        iconColor: "#1d4ed8"
+    });
+    yandexMapInstance.geoObjects.add(placemark);
+}
+
+function setCanvasChrome(visible) {
+    ["map-hint", "map-controls-canvas", "map-legend"].forEach(id => {
+        const element = document.getElementById(id);
+        if (element) element.style.display = visible ? "" : "none";
+    });
+}
+
+function setMapSource(source) {
+    const status = document.getElementById("map-source");
+    if (source === "yandex") {
+        setCanvasChrome(false);
+        if (status) {
+            status.textContent = "Источник: Яндекс.Карты";
+            status.className = "map-source is-online";
+        }
+    } else {
+        setCanvasChrome(true);
+        if (status) {
+            status.textContent = "Оффлайн-резерв (нет интернета)";
+            status.className = "map-source is-offline";
+        }
+    }
+}
+
+async function initSamaraMap(users) {
+    samaraUsersCache = users || [];
+    renderCanvasMap(samaraUsersCache);
+    const status = document.getElementById("map-source");
+    if (status) {
+        status.textContent = "Подключение к Яндекс.Картам...";
+        status.className = "map-source";
+    }
+    try {
+        const ymaps = await loadYandexMaps(12000);
+        renderYandexMap(ymaps, samaraUsersCache);
+        setMapSource("yandex");
+    } catch (error) {
+        setMapSource("offline");
+    }
+}
+
 const MAP_W = 1640;
 const MAP_H = 1120;
 
@@ -824,10 +1025,14 @@ const mapState = {
     drag: { active: false, moved: false, startX: 0, startY: 0, baseX: 0, baseY: 0, candidate: null }
 };
 
-function initSamaraMap(users) {
+function renderCanvasMap(users) {
     const canvas = document.getElementById("samaraMap");
     const viewport = document.getElementById("map-viewport");
+    const yandexContainer = document.getElementById("yandexMap");
     if (!canvas || !viewport) return;
+    if (yandexContainer) yandexContainer.style.display = "none";
+    viewport.classList.remove("is-yandex");
+    canvas.style.display = "block";
 
     mapState.canvas = canvas;
     mapState.ctx = canvas.getContext("2d");
