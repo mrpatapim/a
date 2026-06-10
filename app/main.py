@@ -1,15 +1,18 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from datetime import datetime
+import json
 import os
+import urllib.parse
+import urllib.request
 
 from app.database import engine, Base, SessionLocal
 from app.models.users import User
 from app.models.bills import ServiceType, Meter, MeterReading
 from app.security import get_password_hash
 from app.routers import auth, bills as bills_router, analytics, forecast, admin
-from app.config import YANDEX_MAPS_API_KEY, YANDEX_GEOCODER_API_KEY
+from app.config import APP_NAME
 
 INITIAL_SERVICES = [
     {"name": "Холодное водоснабжение", "unit": "м³"},
@@ -181,9 +184,27 @@ def route_dashboard():
     return FileResponse(os.path.join(static_dir, "dashboard.html"))
 
 
-@app.get("/api/config")
-def get_public_config():
-    return {
-        "yandex_maps_api_key": YANDEX_MAPS_API_KEY,
-        "yandex_geocoder_api_key": YANDEX_GEOCODER_API_KEY,
-    }
+@app.get("/api/geocode")
+def geocode_address(address: str = Query(..., min_length=3, max_length=300)):
+    params = urllib.parse.urlencode({
+        "q": address,
+        "format": "json",
+        "limit": 1,
+        "countrycodes": "ru",
+    })
+    url = f"https://nominatim.openstreetmap.org/search?{params}"
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": f"{APP_NAME}/1.0 (educational project)"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=502, detail="Geocoding service unavailable")
+
+    if not data:
+        raise HTTPException(status_code=404, detail="Address not found")
+
+    item = data[0]
+    return {"lat": float(item["lat"]), "lng": float(item["lon"])}

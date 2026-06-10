@@ -637,9 +637,54 @@ button:active {
     box-shadow: inset 0 0 0 1px rgba(29, 78, 216, 0.04);
 }
 
-.map-yandex {
+.map-canvas {
     width: 100%;
     height: 100%;
+    z-index: 1;
+}
+
+.resident-marker {
+    background: transparent;
+    border: none;
+}
+
+.resident-marker-dot {
+    display: block;
+    width: 16px;
+    height: 16px;
+    margin: 4px;
+    border-radius: 50%;
+    background: #1d4ed8;
+    border: 3px solid #ffffff;
+    box-shadow: 0 2px 8px rgba(29, 78, 216, 0.45);
+}
+
+.leaflet-popup-content-wrapper {
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-lg);
+}
+
+.leaflet-popup-content {
+    margin: 12px 14px;
+    line-height: 1.55;
+    font-size: 13px;
+}
+
+.map-popup-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--c-900);
+    margin-bottom: 8px;
+}
+
+.map-popup-row {
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.map-popup-row b {
+    color: var(--text-main);
+    font-weight: 600;
 }
 
 .map-status {

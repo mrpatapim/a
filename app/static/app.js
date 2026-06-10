@@ -1,29 +1,6 @@
 const API_URL = "";
 const BLUE_SCALE = ["#0b1f4d", "#1e40af", "#1d4ed8", "#2563eb", "#3b82f6", "#0ea5e9", "#60a5fa", "#93c5fd"];
 
-let yandexMapsApiKey = "";
-let yandexGeocoderApiKey = "";
-let yandexConfigLoaded = false;
-
-async function loadPublicConfig() {
-    if (yandexConfigLoaded) {
-        return { mapsKey: yandexMapsApiKey, geocoderKey: yandexGeocoderApiKey };
-    }
-    try {
-        const response = await fetch(`${API_URL}/api/config`);
-        if (response.ok) {
-            const config = await response.json();
-            yandexMapsApiKey = String(config.yandex_maps_api_key || "").trim();
-            yandexGeocoderApiKey = String(config.yandex_geocoder_api_key || "").trim();
-        }
-    } catch (error) {
-        yandexMapsApiKey = "";
-        yandexGeocoderApiKey = "";
-    }
-    yandexConfigLoaded = true;
-    return { mapsKey: yandexMapsApiKey, geocoderKey: yandexGeocoderApiKey };
-}
-
 function authHeaders(json) {
     const token = localStorage.getItem("token");
     const headers = { "Authorization": `Bearer ${token}` };
@@ -93,7 +70,7 @@ function switchView(viewId) {
     const triggeredBtn = document.querySelector(`[onclick="switchView('${viewId}')"]`);
     if (triggeredBtn) triggeredBtn.classList.add("active");
     if (viewId === "view-admin") {
-        setTimeout(() => resizeYandexMap(), 120);
+        setTimeout(() => resizeResidentsMap(), 120);
     }
 }
 
@@ -779,19 +756,37 @@ const SAMARA_LL_INDEX = {};
     }
 })();
 
-let yandexMapInstance = null;
-let yandexResizeBound = false;
+let residentsMapInstance = null;
+let residentsMapResizeBound = false;
 
-function bindYandexResize() {
-    if (yandexResizeBound) return;
-    yandexResizeBound = true;
-    window.addEventListener("resize", () => resizeYandexMap());
+function waitForLeaflet(timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const started = Date.now();
+        const tick = () => {
+            if (window.L && typeof window.L.map === "function") {
+                resolve(window.L);
+                return;
+            }
+            if (Date.now() - started >= timeoutMs) {
+                reject(new Error("timeout"));
+                return;
+            }
+            setTimeout(tick, 50);
+        };
+        tick();
+    });
 }
 
-function resizeYandexMap() {
-    if (!yandexMapInstance) return;
+function bindResidentsMapResize() {
+    if (residentsMapResizeBound) return;
+    residentsMapResizeBound = true;
+    window.addEventListener("resize", () => resizeResidentsMap());
+}
+
+function resizeResidentsMap() {
+    if (!residentsMapInstance) return;
     try {
-        yandexMapInstance.container.fitToViewport();
+        residentsMapInstance.invalidateSize();
     } catch (error) {
         void error;
     }
@@ -816,69 +811,6 @@ function hideMapError() {
     if (overlay) overlay.style.display = "none";
 }
 
-function waitForYmapsApi(timeoutMs) {
-    return new Promise((resolve, reject) => {
-        const started = Date.now();
-        const tick = () => {
-            if (window.ymaps && typeof window.ymaps.ready === "function") {
-                window.ymaps.ready(() => {
-                    if (window.ymaps && window.ymaps.Map) resolve(window.ymaps);
-                    else reject(new Error("ymaps unavailable"));
-                });
-                return;
-            }
-            if (Date.now() - started >= timeoutMs) {
-                reject(new Error("timeout"));
-                return;
-            }
-            setTimeout(tick, 50);
-        };
-        tick();
-    });
-}
-
-function ensureYandexScript(scriptUrl) {
-    return new Promise((resolve, reject) => {
-        let script = document.getElementById("yandex-maps-sdk");
-        if (script && script.getAttribute("data-src") !== scriptUrl) {
-            script.remove();
-            script = null;
-            delete window.ymaps;
-        }
-        if (window.ymaps && window.ymaps.Map && script && script.getAttribute("data-src") === scriptUrl) {
-            resolve();
-            return;
-        }
-        if (!script) {
-            script = document.createElement("script");
-            script.id = "yandex-maps-sdk";
-            script.src = scriptUrl;
-            script.setAttribute("data-src", scriptUrl);
-            script.async = true;
-            script.addEventListener("load", () => resolve(), { once: true });
-            script.addEventListener("error", () => reject(new Error("script error")), { once: true });
-            document.head.appendChild(script);
-            return;
-        }
-        if (script.readyState === "complete" || script.readyState === "loaded") {
-            resolve();
-            return;
-        }
-        script.addEventListener("load", () => resolve(), { once: true });
-        script.addEventListener("error", () => reject(new Error("script error")), { once: true });
-    });
-}
-
-function loadYandexMaps(timeoutMs) {
-    return loadPublicConfig().then(({ mapsKey }) => {
-        if (!mapsKey) {
-            return Promise.reject(new Error("missing api key"));
-        }
-        const scriptUrl = "https://api-maps.yandex.ru/2.1/?apikey=" + encodeURIComponent(mapsKey) + "&lang=ru_RU";
-        return ensureYandexScript(scriptUrl).then(() => waitForYmapsApi(timeoutMs));
-    });
-}
-
 function latlngForUser(user) {
     const normalized = normalizeStreet(user.street);
     return SAMARA_LL_INDEX[normalized] || SAMARA_LL_INDEX[stripStreetPrefix(normalized)] || null;
@@ -891,117 +823,121 @@ function offsetCenter(user) {
     return [SAMARA_CENTER[0] + deltaLat, SAMARA_CENTER[1] + deltaLng];
 }
 
-async function resolveUserCoords(user) {
+function coordsFromStreetIndex(user) {
     const streetCoords = latlngForUser(user);
-    if (streetCoords) {
-        const house = parseInt(String(user.house || "").replace(/\D/g, ""), 10) || 0;
-        const apartment = parseInt(String(user.apartment || "").replace(/\D/g, ""), 10) || 0;
-        const hash = hashString((user.street || "") + "|" + (user.username || ""));
-        const deltaLat = (((house * 17 + apartment * 5 + hash) % 40) - 20) / 10000;
-        const deltaLng = (((house * 11 + apartment * 3 + (hash >> 3)) % 40) - 20) / 10000;
-        return [streetCoords[0] + deltaLat, streetCoords[1] + deltaLng];
+    if (!streetCoords) return null;
+    const house = parseInt(String(user.house || "").replace(/\D/g, ""), 10) || 0;
+    const apartment = parseInt(String(user.apartment || "").replace(/\D/g, ""), 10) || 0;
+    const hash = hashString((user.street || "") + "|" + (user.username || ""));
+    const deltaLat = (((house * 17 + apartment * 5 + hash) % 40) - 20) / 10000;
+    const deltaLng = (((house * 11 + apartment * 3 + (hash >> 3)) % 40) - 20) / 10000;
+    return [streetCoords[0] + deltaLat, streetCoords[1] + deltaLng];
+}
+
+async function geocodeViaBackend(query) {
+    try {
+        const response = await fetch(`${API_URL}/api/geocode?` + new URLSearchParams({ address: query }));
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (data.lat != null && data.lng != null) return [data.lat, data.lng];
+    } catch (error) {
+        void error;
     }
+    return null;
+}
+
+async function resolveUserCoords(user) {
+    const fromIndex = coordsFromStreetIndex(user);
+    if (fromIndex) return fromIndex;
+    const query = "Самара, " + composeAddress(user);
+    const remote = await geocodeViaBackend(query);
+    if (remote) return remote;
     return offsetCenter(user);
 }
 
-function buildUserPlacemark(ymaps, user, coords) {
+function buildUserPopupHtml(user) {
     const budgetText = Number(user.monthly_budget) > 0 ? formatMoney(user.monthly_budget) : "не задан";
-    const body = '<div style="font-size:13px;line-height:1.7;">'
-        + "<b>Адрес:</b> " + escapeHtml(composeAddress(user)) + "<br>"
-        + "<b>Email:</b> " + escapeHtml(user.email || "—") + "<br>"
-        + "<b>Лимит/мес:</b> " + budgetText + "</div>";
-    return new ymaps.Placemark(coords, {
-        balloonContentHeader: escapeHtml(user.username),
-        balloonContentBody: body,
-        hintContent: escapeHtml(user.username)
-    }, {
-        preset: "islands#blueDotIcon",
-        iconColor: "#1d4ed8"
+    return '<div class="map-popup">'
+        + '<div class="map-popup-title">' + escapeHtml(user.username) + "</div>"
+        + '<div class="map-popup-row"><b>Адрес:</b> ' + escapeHtml(composeAddress(user)) + "</div>"
+        + '<div class="map-popup-row"><b>Email:</b> ' + escapeHtml(user.email || "—") + "</div>"
+        + '<div class="map-popup-row"><b>Лимит/мес:</b> ' + budgetText + "</div>"
+        + "</div>";
+}
+
+function createResidentIcon(L) {
+    return L.divIcon({
+        className: "resident-marker",
+        html: '<span class="resident-marker-dot"></span>',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+        popupAnchor: [0, -12]
     });
 }
 
-async function renderYandexMap(ymaps, users) {
-    const container = document.getElementById("yandexMap");
+async function renderResidentsMap(users) {
+    const container = document.getElementById("residentsMap");
     if (!container) return;
 
     hideMapError();
+    const L = await waitForLeaflet(15000);
 
-    if (yandexMapInstance) {
-        try { yandexMapInstance.destroy(); } catch (error) { void error; }
-        yandexMapInstance = null;
+    if (residentsMapInstance) {
+        residentsMapInstance.remove();
+        residentsMapInstance = null;
     }
-    container.innerHTML = "";
 
-    yandexMapInstance = new ymaps.Map(container, {
+    residentsMapInstance = L.map(container, {
         center: SAMARA_CENTER,
         zoom: 12,
-        controls: ["zoomControl", "fullscreenControl"]
-    }, {
-        suppressMapOpenBlock: true,
-        yandexMapDisablePoiInteractivity: true
+        zoomControl: true
     });
 
-    bindYandexResize();
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    }).addTo(residentsMapInstance);
 
-    const collection = new ymaps.GeoObjectCollection();
+    bindResidentsMapResize();
+
     const list = users || [];
+    const markers = [];
+    const icon = createResidentIcon(L);
 
-    if (list.length === 0) {
-        yandexMapInstance.geoObjects.add(collection);
-        resizeYandexMap();
-        return;
+    for (const user of list) {
+        const coords = await resolveUserCoords(user);
+        const marker = L.marker(coords, { icon: icon })
+            .bindPopup(buildUserPopupHtml(user), { maxWidth: 300, className: "resident-popup" });
+        marker.addTo(residentsMapInstance);
+        markers.push(marker);
     }
 
-    const placemarks = await Promise.all(list.map(async user => {
-        const coords = await resolveUserCoords(user);
-        return buildUserPlacemark(ymaps, user, coords);
-    }));
+    if (markers.length > 0) {
+        const group = L.featureGroup(markers);
+        residentsMapInstance.fitBounds(group.getBounds().pad(0.18));
+    }
 
-    placemarks.forEach(placemark => collection.add(placemark));
-    yandexMapInstance.geoObjects.add(collection);
-
-    requestAnimationFrame(() => {
-        if (!yandexMapInstance) return;
-        resizeYandexMap();
-        try {
-            const bounds = collection.getBounds();
-            if (bounds) {
-                yandexMapInstance.setBounds(bounds, { checkZoomRange: true, zoomMargin: 50 });
-            }
-        } catch (error) {
-            void error;
-        }
-        setTimeout(() => resizeYandexMap(), 200);
-    });
+    requestAnimationFrame(() => resizeResidentsMap());
+    setTimeout(() => resizeResidentsMap(), 200);
 }
 
 function mapErrorMessage(error) {
     if (!error || !error.message) {
-        return "Не удалось загрузить Яндекс.Карты. Проверьте ключ API и подключение к интернету.";
-    }
-    if (error.message === "missing api key") {
-        return "Укажите YANDEX_MAPS_API_KEY в файле .env (см. .env.example).";
+        return "Не удалось загрузить карту. Проверьте подключение к интернету.";
     }
     if (error.message === "timeout") {
-        return "Превышено время ожидания загрузки Яндекс.Карт. Проверьте интернет-соединение.";
-    }
-    if (error.message === "script error") {
-        return "Скрипт Яндекс.Карт не загрузился. Проверьте YANDEX_MAPS_API_KEY и ограничения по домену в кабинете разработчика.";
-    }
-    if (error.message === "ymaps unavailable") {
-        return "API Яндекс.Карт недоступен. Проверьте ключ JavaScript API и разрешённые домены (localhost).";
+        return "Превышено время ожидания загрузки карты. Проверьте интернет-соединение.";
     }
     return "Ошибка карты: " + error.message;
 }
 
 async function initResidentsMap(users) {
-    setMapStatus("Загрузка Яндекс.Карт...", "");
+    setMapStatus("Загрузка карты...", "");
     hideMapError();
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     try {
-        const ymaps = await loadYandexMaps(20000);
-        await renderYandexMap(ymaps, users || []);
-        setMapStatus("Яндекс.Карты", "is-online");
+        await renderResidentsMap(users || []);
+        setMapStatus("OpenStreetMap", "is-online");
     } catch (error) {
         setMapStatus("Ошибка загрузки", "is-error");
         showMapError(mapErrorMessage(error));

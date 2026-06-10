@@ -4,8 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Личный кабинет — Учет ЖКХ</title>
-    <link rel="stylesheet" href="/static/style.css?v=10.6">
-    <script src="/static/vendor/chart.umd.min.js?v=10.6"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+    <link rel="stylesheet" href="/static/style.css?v=11.0">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="/static/vendor/chart.umd.min.js?v=11.0"></script>
 </head>
 <body>
     <div class="layout">
@@ -180,9 +182,9 @@
 
                 <div class="card">
                     <h3>ГИС-карта жилого фонда — Самара</h3>
-                    <p class="card-sub">Интерактивная карта расселения жильцов на Яндекс.Картах. Метки наносятся по адресу из базы данных; клик по метке открывает карточку с ФИО и адресом.</p>
+                    <p class="card-sub">Интерактивная карта расселения жильцов на OpenStreetMap. Метки наносятся по адресу из базы данных; клик по метке открывает карточку с ФИО и адресом.</p>
                     <div class="map-viewport" id="map-viewport">
-                        <div id="yandexMap" class="map-yandex"></div>
+                        <div id="residentsMap" class="map-canvas"></div>
                         <div id="map-status" class="map-status">Загрузка...</div>
                         <div id="map-error" class="map-error" style="display: none;"></div>
                     </div>
@@ -212,7 +214,7 @@
         </div>
     </div>
     <div id="toast-container" class="toast-container"></div>
-    <script src="/static/app.js?v=10.6"></script>
+    <script src="/static/app.js?v=11.0"></script>
     <script>
         initDashboard();
     </script>
