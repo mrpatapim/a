@@ -989,7 +989,7 @@ async function initResidentsMap(users) {
         setMapStatus("Яндекс.Карты", "is-online");
     } catch (error) {
         const message = error && error.message === "missing api key"
-            ? "Укажите ключ JavaScript API в файле yandex_maps_api_key.txt в корне проекта."
+            ? "Укажите YANDEX_MAPS_API_KEY в файле .env (см. .env.example)."
             : (error && error.message === "timeout"
                 ? "Превышено время ожидания загрузки Яндекс.Карт. Проверьте интернет-соединение."
                 : "Не удалось загрузить Яндекс.Карты. Проверьте ключ API и подключение к интернету.");
