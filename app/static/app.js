@@ -637,7 +637,7 @@ async function loadAdminUsers() {
         }
     }
 
-    initSamaraMap(users);
+    initResidentsMap(users);
 }
 
 async function viewUserMeters(userId) {
@@ -713,6 +713,23 @@ async function exportAdminCSV() {
 
 const SAMARA_CENTER = [53.1981, 50.1136];
 
+function normalizeStreet(value) {
+    return String(value || "").toLowerCase().replace(/\./g, "").replace(/ё/g, "е").replace(/\s+/g, " ").trim();
+}
+
+function stripStreetPrefix(value) {
+    return value.replace(/^(улица|ул|проспект|пр-кт|пр|переулок|пер|бульвар|б-р|шоссе|ш|проезд)\s+/, "").trim();
+}
+
+function hashString(value) {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+        hash ^= value.charCodeAt(i);
+        hash = (hash * 16777619) >>> 0;
+    }
+    return hash >>> 0;
+}
+
 const SAMARA_STREETS_LL = {
     "ул. Куйбышева": [53.1882, 50.0972],
     "ул. Галактионовская": [53.1929, 50.1003],
@@ -758,7 +775,6 @@ const SAMARA_LL_INDEX = {};
 })();
 
 let yandexMapInstance = null;
-let samaraUsersCache = [];
 let yandexResizeBound = false;
 
 function bindYandexResize() {
@@ -774,6 +790,25 @@ function resizeYandexMap() {
     } catch (error) {
         void error;
     }
+}
+
+function setMapStatus(text, state) {
+    const status = document.getElementById("map-status");
+    if (!status) return;
+    status.textContent = text;
+    status.className = "map-status" + (state ? " " + state : "");
+}
+
+function showMapError(message) {
+    const overlay = document.getElementById("map-error");
+    if (!overlay) return;
+    overlay.innerHTML = "<p>" + escapeHtml(message) + "</p>";
+    overlay.style.display = "flex";
+}
+
+function hideMapError() {
+    const overlay = document.getElementById("map-error");
+    if (overlay) overlay.style.display = "none";
 }
 
 function loadYandexMaps(timeoutMs) {
@@ -802,6 +837,7 @@ function loadYandexMaps(timeoutMs) {
             if (script && script.getAttribute("data-src") !== scriptUrl) {
                 script.remove();
                 script = null;
+                delete window.ymaps;
             }
             if (window.ymaps && window.ymaps.Map && script && script.getAttribute("data-src") === scriptUrl) {
                 ready();
@@ -833,64 +869,25 @@ function offsetCenter(user) {
     return [SAMARA_CENTER[0] + deltaLat, SAMARA_CENTER[1] + deltaLng];
 }
 
-function renderYandexMap(ymaps, users) {
-    const container = document.getElementById("yandexMap");
-    const canvas = document.getElementById("samaraMap");
-    const viewport = document.getElementById("map-viewport");
-    if (!container) return;
-    if (canvas) canvas.style.display = "none";
-    if (viewport) viewport.classList.add("is-yandex");
-    container.style.display = "block";
-    closeBalloon();
-
-    if (yandexMapInstance) {
-        try { yandexMapInstance.destroy(); } catch (error) { void error; }
-        yandexMapInstance = null;
+async function resolveUserCoords(ymaps, user) {
+    const query = "Самара, " + composeAddress(user);
+    try {
+        const result = await ymaps.geocode(query, { results: 1 });
+        const geoObject = result.geoObjects.get(0);
+        if (geoObject) return geoObject.geometry.getCoordinates();
+    } catch (error) {
+        void error;
     }
-
-    yandexMapInstance = new ymaps.Map(container, {
-        center: SAMARA_CENTER,
-        zoom: 12,
-        controls: ["zoomControl", "typeSelector", "fullscreenControl"]
-    }, { suppressMapOpenBlock: true });
-
-    bindYandexResize();
-    resizeYandexMap();
-
-    (users || []).forEach(user => {
-        const direct = latlngForUser(user);
-        if (direct) {
-            addYandexPlacemark(ymaps, user, direct);
-        } else {
-            ymaps.geocode("Самара, " + composeAddress(user), { results: 1 })
-                .then(result => {
-                    const found = result.geoObjects.get(0);
-                    addYandexPlacemark(ymaps, user, found ? found.geometry.getCoordinates() : offsetCenter(user));
-                })
-                .catch(() => addYandexPlacemark(ymaps, user, offsetCenter(user)));
-        }
-    });
-
-    setTimeout(() => {
-        if (!yandexMapInstance) return;
-        resizeYandexMap();
-        try {
-            const bounds = yandexMapInstance.geoObjects.getBounds();
-            if (bounds) yandexMapInstance.setBounds(bounds, { checkZoomRange: true, zoomMargin: 45 });
-        } catch (error) {
-            void error;
-        }
-    }, 1000);
+    return latlngForUser(user) || offsetCenter(user);
 }
 
-function addYandexPlacemark(ymaps, user, coords) {
-    if (!yandexMapInstance) return;
+function buildUserPlacemark(ymaps, user, coords) {
     const budgetText = Number(user.monthly_budget) > 0 ? formatMoney(user.monthly_budget) : "не задан";
     const body = '<div style="font-size:13px;line-height:1.7;">'
         + "<b>Адрес:</b> " + escapeHtml(composeAddress(user)) + "<br>"
         + "<b>Email:</b> " + escapeHtml(user.email || "—") + "<br>"
         + "<b>Лимит/мес:</b> " + budgetText + "</div>";
-    const placemark = new ymaps.Placemark(coords, {
+    return new ymaps.Placemark(coords, {
         balloonContentHeader: escapeHtml(user.username),
         balloonContentBody: body,
         hintContent: escapeHtml(user.username)
@@ -898,596 +895,77 @@ function addYandexPlacemark(ymaps, user, coords) {
         preset: "islands#blueDotIcon",
         iconColor: "#1d4ed8"
     });
-    yandexMapInstance.geoObjects.add(placemark);
 }
 
-function setCanvasChrome(visible) {
-    ["map-hint", "map-controls-canvas", "map-legend"].forEach(id => {
-        const element = document.getElementById(id);
-        if (element) element.style.display = visible ? "" : "none";
+async function renderYandexMap(ymaps, users) {
+    const container = document.getElementById("yandexMap");
+    if (!container) return;
+
+    hideMapError();
+
+    if (yandexMapInstance) {
+        try { yandexMapInstance.destroy(); } catch (error) { void error; }
+        yandexMapInstance = null;
+    }
+    container.innerHTML = "";
+
+    yandexMapInstance = new ymaps.Map(container, {
+        center: SAMARA_CENTER,
+        zoom: 12,
+        controls: ["zoomControl", "fullscreenControl"]
+    }, {
+        suppressMapOpenBlock: true,
+        yandexMapDisablePoiInteractivity: true
+    });
+
+    bindYandexResize();
+
+    const collection = new ymaps.GeoObjectCollection();
+    const list = users || [];
+
+    if (list.length === 0) {
+        yandexMapInstance.geoObjects.add(collection);
+        resizeYandexMap();
+        return;
+    }
+
+    const placemarks = await Promise.all(list.map(async user => {
+        const coords = await resolveUserCoords(ymaps, user);
+        return buildUserPlacemark(ymaps, user, coords);
+    }));
+
+    placemarks.forEach(placemark => collection.add(placemark));
+    yandexMapInstance.geoObjects.add(collection);
+
+    requestAnimationFrame(() => {
+        if (!yandexMapInstance) return;
+        resizeYandexMap();
+        try {
+            const bounds = collection.getBounds();
+            if (bounds) {
+                yandexMapInstance.setBounds(bounds, { checkZoomRange: true, zoomMargin: 50 });
+            }
+        } catch (error) {
+            void error;
+        }
+        setTimeout(() => resizeYandexMap(), 200);
     });
 }
 
-function setMapSource(source) {
-    const status = document.getElementById("map-source");
-    if (source === "yandex") {
-        setCanvasChrome(false);
-        if (status) {
-            status.textContent = "Источник: Яндекс.Карты";
-            status.className = "map-source is-online";
-        }
-    } else {
-        setCanvasChrome(true);
-        if (status) {
-            status.textContent = "Оффлайн-резерв (нет интернета)";
-            status.className = "map-source is-offline";
-        }
-    }
-}
-
-async function initSamaraMap(users) {
-    samaraUsersCache = users || [];
-    renderCanvasMap(samaraUsersCache);
-    const status = document.getElementById("map-source");
-    if (status) {
-        status.textContent = "Подключение к Яндекс.Картам...";
-        status.className = "map-source";
-    }
+async function initResidentsMap(users) {
+    setMapStatus("Загрузка Яндекс.Карт...", "");
+    hideMapError();
     try {
-        const ymaps = await loadYandexMaps(12000);
-        renderYandexMap(ymaps, samaraUsersCache);
-        setMapSource("yandex");
+        const ymaps = await loadYandexMaps(15000);
+        await renderYandexMap(ymaps, users || []);
+        setMapStatus("Яндекс.Карты", "is-online");
     } catch (error) {
-        setMapSource("offline");
-        if (status) {
-            if (error && error.message === "missing api key") {
-                status.textContent = "Нет ключа API — офлайн-карта";
-            } else if (error && error.message === "timeout") {
-                status.textContent = "Таймаут Яндекс.Карт — офлайн-карта";
-            } else {
-                status.textContent = "Оффлайн-резерв (нет интернета)";
-            }
-        }
-    }
-}
-
-const MAP_W = 1640;
-const MAP_H = 1120;
-
-const STREET_COORDS = {
-    "ул. Куйбышева": [300, 880],
-    "ул. Галактионовская": [360, 840],
-    "ул. Самарская": [420, 800],
-    "ул. Молодогвардейская": [470, 768],
-    "ул. Чапаевская": [330, 852],
-    "ул. Фрунзе": [268, 902],
-    "ул. Ленинградская": [382, 818],
-    "ул. Венцека": [250, 924],
-    "ул. Некрасовская": [312, 872],
-    "ул. Водников": [228, 952],
-    "ул. Степана Разина": [300, 910],
-    "ул. Алексея Толстого": [262, 932],
-    "ул. Полевая": [560, 660],
-    "ул. Осипенко": [622, 620],
-    "ул. Первомайская": [682, 598],
-    "ул. Челюскинцев": [702, 642],
-    "проспект Ленина": [742, 560],
-    "ул. Мичурина": [640, 690],
-    "ул. Революционная": [782, 662],
-    "ул. Ново-Садовая": [820, 500],
-    "Московское шоссе": [882, 560],
-    "ул. Авроры": [862, 762],
-    "ул. Партизанская": [800, 820],
-    "ул. Аэродромная": [820, 720],
-    "ул. Карла Маркса": [980, 560],
-    "ул. XXII Партсъезда": [1042, 520],
-    "ул. Ново-Вокзальная": [1000, 480],
-    "ул. Советской Армии": [1082, 560],
-    "ул. Гагарина": [1082, 680],
-    "ул. Победы": [1142, 620],
-    "ул. Стара-Загора": [1222, 500],
-    "ул. Ташкентская": [1322, 460],
-    "ул. Демократическая": [1242, 344],
-    "ул. Дыбенко": [1162, 700],
-    "ул. Антонова-Овсеенко": [1122, 742],
-    "проспект Кирова": [1200, 600]
-};
-
-const MAP_AVENUES = [
-    { name: "Московское шоссе", pts: [[470, 650], [700, 590], [900, 560], [1140, 592], [1320, 600]] },
-    { name: "ул. Ново-Садовая", pts: [[520, 560], [760, 505], [1000, 478], [1200, 470]] },
-    { name: "проспект Ленина", pts: [[560, 602], [720, 562], [900, 542]] },
-    { name: "ул. Стара-Загора", pts: [[1000, 520], [1200, 500], [1360, 470]] },
-    { name: "Волжский проспект", pts: [[250, 946], [520, 824], [820, 722], [1090, 640]] },
-    { name: "ул. Гагарина", pts: [[860, 768], [1020, 700], [1180, 660]] }
-];
-
-const MAP_DISTRICTS = [
-    { name: "Самарский р-н", x: 330, y: 752 },
-    { name: "Ленинский р-н", x: 560, y: 560 },
-    { name: "Октябрьский р-н", x: 860, y: 430 },
-    { name: "Промышленный р-н", x: 1080, y: 412 },
-    { name: "Советский р-н", x: 1180, y: 720 },
-    { name: "Кировский р-н", x: 1360, y: 372 }
-];
-
-const STREET_INDEX = {};
-
-function normalizeStreet(value) {
-    return String(value || "").toLowerCase().replace(/\./g, "").replace(/ё/g, "е").replace(/\s+/g, " ").trim();
-}
-
-function stripStreetPrefix(value) {
-    return value.replace(/^(улица|ул|проспект|пр-кт|пр|переулок|пер|бульвар|б-р|шоссе|ш|проезд)\s+/, "").trim();
-}
-
-(function buildStreetIndex() {
-    for (const name in STREET_COORDS) {
-        const normalized = normalizeStreet(name);
-        STREET_INDEX[normalized] = STREET_COORDS[name];
-        STREET_INDEX[stripStreetPrefix(normalized)] = STREET_COORDS[name];
-    }
-})();
-
-function lookupStreet(street) {
-    const normalized = normalizeStreet(street);
-    return STREET_INDEX[normalized] || STREET_INDEX[stripStreetPrefix(normalized)] || null;
-}
-
-function hashString(value) {
-    let hash = 2166136261;
-    for (let i = 0; i < value.length; i++) {
-        hash ^= value.charCodeAt(i);
-        hash = (hash * 16777619) >>> 0;
-    }
-    return hash >>> 0;
-}
-
-function geocodeUser(user) {
-    const base = lookupStreet(user.street);
-    const hash = hashString((user.street || "") + "|" + (user.username || ""));
-    let x;
-    let y;
-    if (base) {
-        x = base[0];
-        y = base[1];
-    } else {
-        x = 440 + (hash % 720);
-        y = 380 + ((hash >> 4) % 410);
-    }
-    const house = parseInt(String(user.house || "").replace(/\D/g, ""), 10) || 0;
-    const apartment = parseInt(String(user.apartment || "").replace(/\D/g, ""), 10) || 0;
-    const offsetX = (((house * 37 + apartment * 13) % 64) - 32);
-    const offsetY = (((house * 23 + apartment * 7 + hash) % 64) - 32);
-    return { x: x + offsetX, y: y + offsetY };
-}
-
-const mapState = {
-    canvas: null,
-    ctx: null,
-    viewport: null,
-    dpr: 1,
-    width: 0,
-    height: 0,
-    scale: 1,
-    minScale: 0.3,
-    maxScale: 3,
-    offsetX: 0,
-    offsetY: 0,
-    fitScale: 1,
-    fitOffsetX: 0,
-    fitOffsetY: 0,
-    markers: [],
-    hovered: null,
-    selected: null,
-    initialized: false,
-    rafHandle: 0,
-    drag: { active: false, moved: false, startX: 0, startY: 0, baseX: 0, baseY: 0, candidate: null }
-};
-
-function renderCanvasMap(users) {
-    const canvas = document.getElementById("samaraMap");
-    const viewport = document.getElementById("map-viewport");
-    const yandexContainer = document.getElementById("yandexMap");
-    if (!canvas || !viewport) return;
-    if (yandexContainer) yandexContainer.style.display = "none";
-    viewport.classList.remove("is-yandex");
-    canvas.style.display = "block";
-
-    mapState.canvas = canvas;
-    mapState.ctx = canvas.getContext("2d");
-    mapState.viewport = viewport;
-    mapState.markers = (users || []).map(user => {
-        const point = geocodeUser(user);
-        return { user: user, x: point.x, y: point.y };
-    });
-    mapState.hovered = null;
-    mapState.selected = null;
-    closeBalloon();
-
-    resizeMap();
-    mapState.scale = mapState.fitScale;
-    mapState.offsetX = mapState.fitOffsetX;
-    mapState.offsetY = mapState.fitOffsetY;
-
-    if (!mapState.initialized) {
-        canvas.addEventListener("pointerdown", onMapPointerDown);
-        canvas.addEventListener("pointermove", onMapPointerMove);
-        window.addEventListener("pointerup", onMapPointerUp);
-        canvas.addEventListener("pointerleave", () => {
-            if (!mapState.drag.active && mapState.hovered) {
-                mapState.hovered = null;
-                requestMapDraw();
-            }
-        });
-        viewport.addEventListener("wheel", onMapWheel, { passive: false });
-        window.addEventListener("resize", () => {
-            if (mapState.initialized && mapState.viewport && mapState.viewport.clientWidth > 0) {
-                resizeMap();
-                mapState.scale = clamp(mapState.scale, mapState.minScale, mapState.maxScale);
-                requestMapDraw();
-            }
-        });
-        mapState.initialized = true;
-    }
-    requestMapDraw();
-}
-
-function resizeMap() {
-    const viewport = mapState.viewport;
-    const cssWidth = viewport.clientWidth;
-    const cssHeight = viewport.clientHeight;
-    mapState.dpr = window.devicePixelRatio || 1;
-    mapState.width = cssWidth;
-    mapState.height = cssHeight;
-    mapState.canvas.width = Math.round(cssWidth * mapState.dpr);
-    mapState.canvas.height = Math.round(cssHeight * mapState.dpr);
-    const fit = Math.min(cssWidth / MAP_W, cssHeight / MAP_H) * 0.98;
-    mapState.fitScale = fit;
-    mapState.fitOffsetX = (cssWidth - MAP_W * fit) / 2;
-    mapState.fitOffsetY = (cssHeight - MAP_H * fit) / 2;
-    mapState.minScale = Math.max(0.18, fit * 0.7);
-    mapState.maxScale = fit * 6;
-}
-
-function worldToScreen(worldX, worldY) {
-    return { x: worldX * mapState.scale + mapState.offsetX, y: worldY * mapState.scale + mapState.offsetY };
-}
-
-function getMapPointer(event) {
-    const rect = mapState.canvas.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
-}
-
-function markerAtScreen(screenX, screenY) {
-    const threshold = 17;
-    let best = null;
-    let bestDistance = threshold * threshold;
-    for (const marker of mapState.markers) {
-        const screen = worldToScreen(marker.x, marker.y);
-        const dx = screen.x - screenX;
-        const dy = screen.y - screenY;
-        const distance = dx * dx + dy * dy;
-        if (distance <= bestDistance) {
-            bestDistance = distance;
-            best = marker;
-        }
-    }
-    return best;
-}
-
-function requestMapDraw() {
-    if (mapState.rafHandle) return;
-    mapState.rafHandle = requestAnimationFrame(() => {
-        mapState.rafHandle = 0;
-        drawMap();
-    });
-}
-
-function onMapPointerDown(event) {
-    const pointer = getMapPointer(event);
-    if (mapState.canvas.setPointerCapture) {
-        try { mapState.canvas.setPointerCapture(event.pointerId); } catch (error) { void error; }
-    }
-    mapState.drag.active = true;
-    mapState.drag.moved = false;
-    mapState.drag.startX = pointer.x;
-    mapState.drag.startY = pointer.y;
-    mapState.drag.baseX = mapState.offsetX;
-    mapState.drag.baseY = mapState.offsetY;
-    mapState.drag.candidate = markerAtScreen(pointer.x, pointer.y);
-    mapState.viewport.classList.add("is-grabbing");
-}
-
-function onMapPointerMove(event) {
-    const pointer = getMapPointer(event);
-    if (mapState.drag.active) {
-        const dx = pointer.x - mapState.drag.startX;
-        const dy = pointer.y - mapState.drag.startY;
-        if (Math.abs(dx) + Math.abs(dy) > 4) mapState.drag.moved = true;
-        mapState.offsetX = mapState.drag.baseX + dx;
-        mapState.offsetY = mapState.drag.baseY + dy;
-        requestMapDraw();
-    } else {
-        const hit = markerAtScreen(pointer.x, pointer.y);
-        if (hit !== mapState.hovered) {
-            mapState.hovered = hit;
-            mapState.canvas.style.cursor = hit ? "pointer" : "";
-            requestMapDraw();
-        }
-    }
-}
-
-function onMapPointerUp() {
-    if (mapState.drag.active && !mapState.drag.moved) {
-        if (mapState.drag.candidate) {
-            selectMarker(mapState.drag.candidate);
-        } else if (mapState.selected) {
-            closeBalloon();
-        }
-    }
-    mapState.drag.active = false;
-    mapState.drag.candidate = null;
-    if (mapState.viewport) mapState.viewport.classList.remove("is-grabbing");
-}
-
-function onMapWheel(event) {
-    event.preventDefault();
-    const pointer = getMapPointer(event);
-    const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
-    zoomMapAt(pointer.x, pointer.y, factor);
-}
-
-function zoomMapAt(screenX, screenY, factor) {
-    const newScale = clamp(mapState.scale * factor, mapState.minScale, mapState.maxScale);
-    const ratio = newScale / mapState.scale;
-    mapState.offsetX = screenX - ratio * (screenX - mapState.offsetX);
-    mapState.offsetY = screenY - ratio * (screenY - mapState.offsetY);
-    mapState.scale = newScale;
-    requestMapDraw();
-}
-
-function mapZoom(direction) {
-    if (!mapState.initialized) return;
-    const factor = direction > 0 ? 1.25 : 1 / 1.25;
-    zoomMapAt(mapState.width / 2, mapState.height / 2, factor);
-}
-
-function mapResetView() {
-    if (!mapState.initialized) return;
-    mapState.scale = mapState.fitScale;
-    mapState.offsetX = mapState.fitOffsetX;
-    mapState.offsetY = mapState.fitOffsetY;
-    requestMapDraw();
-}
-
-function selectMarker(marker) {
-    mapState.selected = marker;
-    const balloon = document.getElementById("map-balloon");
-    if (!balloon) return;
-    const user = marker.user;
-    const initial = (user.username || "?").trim().charAt(0).toUpperCase();
-    const budgetText = Number(user.monthly_budget) > 0 ? formatMoney(user.monthly_budget) : "не задан";
-    balloon.innerHTML = `
-        <div class="balloon-head">
-            <div class="balloon-name"><span class="balloon-avatar">${escapeHtml(initial)}</span>${escapeHtml(user.username)}</div>
-            <button class="balloon-close" onclick="closeBalloon()">×</button>
-        </div>
-        <div class="balloon-row"><b>Адрес:</b><span>${escapeHtml(composeAddress(user))}</span></div>
-        <div class="balloon-row"><b>Email:</b><span>${escapeHtml(user.email || "—")}</span></div>
-        <div class="balloon-row"><b>Лимит/мес:</b><span>${budgetText}</span></div>`;
-    balloon.style.display = "block";
-    requestMapDraw();
-}
-
-function closeBalloon() {
-    mapState.selected = null;
-    const balloon = document.getElementById("map-balloon");
-    if (balloon) balloon.style.display = "none";
-    requestMapDraw();
-}
-
-function positionBalloon() {
-    const balloon = document.getElementById("map-balloon");
-    if (!balloon || !mapState.selected) return;
-    const screen = worldToScreen(mapState.selected.x, mapState.selected.y);
-    const visible = screen.x > -40 && screen.x < mapState.width + 40 && screen.y > -40 && screen.y < mapState.height + 60;
-    balloon.style.display = visible ? "block" : "none";
-    balloon.style.left = `${screen.x}px`;
-    balloon.style.top = `${screen.y - 14}px`;
-}
-
-function roundRect(ctx, x, y, width, height, radius) {
-    ctx.beginPath();
-    ctx.moveTo(x + radius, y);
-    ctx.arcTo(x + width, y, x + width, y + height, radius);
-    ctx.arcTo(x + width, y + height, x, y + height, radius);
-    ctx.arcTo(x, y + height, x, y, radius);
-    ctx.arcTo(x, y, x + width, y, radius);
-    ctx.closePath();
-}
-
-function drawMap() {
-    const ctx = mapState.ctx;
-    if (!ctx) return;
-
-    ctx.setTransform(mapState.dpr, 0, 0, mapState.dpr, 0, 0);
-    ctx.clearRect(0, 0, mapState.width, mapState.height);
-
-    const landGradient = ctx.createLinearGradient(0, 0, 0, mapState.height);
-    landGradient.addColorStop(0, "#e9f1fe");
-    landGradient.addColorStop(1, "#dce8fb");
-    ctx.fillStyle = landGradient;
-    ctx.fillRect(0, 0, mapState.width, mapState.height);
-
-    ctx.save();
-    ctx.translate(mapState.offsetX, mapState.offsetY);
-    ctx.scale(mapState.scale, mapState.scale);
-    const inv = 1 / mapState.scale;
-
-    drawMapGrid(ctx, inv);
-    drawMapRiver(ctx, inv);
-    drawMapAvenues(ctx, inv);
-    drawMapMarkers(ctx, inv);
-
-    ctx.restore();
-
-    drawMapLabels(ctx);
-    positionBalloon();
-}
-
-function drawMapGrid(ctx, inv) {
-    ctx.strokeStyle = "rgba(30, 58, 138, 0.06)";
-    ctx.lineWidth = 1 * inv;
-    for (let x = 0; x <= MAP_W; x += 80) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, MAP_H);
-        ctx.stroke();
-    }
-    for (let y = 0; y <= MAP_H; y += 80) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(MAP_W, y);
-        ctx.stroke();
-    }
-    ctx.strokeStyle = "rgba(30, 58, 138, 0.12)";
-    ctx.lineWidth = 2 * inv;
-    ctx.strokeRect(0, 0, MAP_W, MAP_H);
-}
-
-function drawMapRiver(ctx, inv) {
-    ctx.beginPath();
-    ctx.moveTo(60, 1120);
-    ctx.lineTo(60, 1020);
-    ctx.quadraticCurveTo(300, 1000, 520, 968);
-    ctx.quadraticCurveTo(840, 915, 1080, 838);
-    ctx.quadraticCurveTo(1320, 756, 1440, 520);
-    ctx.quadraticCurveTo(1520, 300, 1640, 150);
-    ctx.lineTo(1640, 1120);
-    ctx.closePath();
-    const waterGradient = ctx.createLinearGradient(200, 1100, 1500, 300);
-    waterGradient.addColorStop(0, "#4f9bf2");
-    waterGradient.addColorStop(1, "#8cc4fb");
-    ctx.fillStyle = waterGradient;
-    ctx.fill();
-
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.32)";
-    ctx.lineWidth = 3 * inv;
-    const ripples = [[420, 1010, 740, 950], [760, 905, 1080, 800], [1080, 770, 1340, 600]];
-    ripples.forEach(line => {
-        ctx.beginPath();
-        ctx.moveTo(line[0], line[1]);
-        ctx.quadraticCurveTo((line[0] + line[2]) / 2, line[1] - 26, line[2], line[3]);
-        ctx.stroke();
-    });
-}
-
-function drawMapAvenues(ctx, inv) {
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    MAP_AVENUES.forEach(avenue => {
-        ctx.beginPath();
-        ctx.moveTo(avenue.pts[0][0], avenue.pts[0][1]);
-        for (let i = 1; i < avenue.pts.length; i++) {
-            ctx.lineTo(avenue.pts[i][0], avenue.pts[i][1]);
-        }
-        ctx.strokeStyle = "rgba(29, 78, 216, 0.16)";
-        ctx.lineWidth = 15 * inv;
-        ctx.stroke();
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.7)";
-        ctx.lineWidth = 5 * inv;
-        ctx.stroke();
-    });
-}
-
-function drawMapMarkers(ctx, inv) {
-    const baseRadius = 9;
-    for (const marker of mapState.markers) {
-        const isSelected = mapState.selected === marker;
-        const isHovered = mapState.hovered === marker;
-        const radius = (isSelected ? baseRadius + 2 : baseRadius) * inv;
-
-        ctx.beginPath();
-        ctx.arc(marker.x, marker.y, radius * 2.1, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(14, 165, 233, 0.18)";
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.arc(marker.x, marker.y, radius, 0, Math.PI * 2);
-        ctx.fillStyle = "#ffffff";
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.arc(marker.x, marker.y, radius * 0.66, 0, Math.PI * 2);
-        ctx.fillStyle = isSelected ? "#1d4ed8" : (isHovered ? "#0284c7" : "#0ea5e9");
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.arc(marker.x, marker.y, radius * 0.22, 0, Math.PI * 2);
-        ctx.fillStyle = "#ffffff";
-        ctx.fill();
-
-        if (isSelected) {
-            ctx.beginPath();
-            ctx.arc(marker.x, marker.y, radius * 1.55, 0, Math.PI * 2);
-            ctx.strokeStyle = "rgba(29, 78, 216, 0.6)";
-            ctx.lineWidth = 2 * inv;
-            ctx.stroke();
-        }
-    }
-}
-
-function drawMapLabels(ctx) {
-    ctx.setTransform(mapState.dpr, 0, 0, mapState.dpr, 0, 0);
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-
-    ctx.font = "700 12px 'Segoe UI', sans-serif";
-    ctx.fillStyle = "rgba(30, 58, 138, 0.30)";
-    MAP_DISTRICTS.forEach(district => {
-        const screen = worldToScreen(district.x, district.y);
-        if (screen.x < -60 || screen.x > mapState.width + 60 || screen.y < -20 || screen.y > mapState.height + 20) return;
-        ctx.fillText(district.name.toUpperCase(), screen.x, screen.y);
-    });
-
-    ctx.font = "600 11px 'Segoe UI', sans-serif";
-    ctx.fillStyle = "rgba(30, 58, 138, 0.5)";
-    MAP_AVENUES.forEach(avenue => {
-        const mid = avenue.pts[Math.floor(avenue.pts.length / 2)];
-        const screen = worldToScreen(mid[0], mid[1]);
-        if (screen.x < 0 || screen.x > mapState.width || screen.y < 0 || screen.y > mapState.height) return;
-        ctx.fillText(avenue.name, screen.x, screen.y - 11);
-    });
-
-    const riverScreen = worldToScreen(1250, 736);
-    ctx.save();
-    ctx.translate(riverScreen.x, riverScreen.y);
-    ctx.rotate(-0.62);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
-    ctx.font = "700 18px 'Segoe UI', sans-serif";
-    ctx.fillText("р. Волга", 0, 0);
-    ctx.restore();
-
-    const hovered = mapState.hovered;
-    if (hovered && hovered !== mapState.selected) {
-        const screen = worldToScreen(hovered.x, hovered.y);
-        const label = hovered.user.username || "";
-        ctx.font = "700 12.5px 'Segoe UI', sans-serif";
-        const width = ctx.measureText(label).width + 18;
-        const height = 22;
-        const boxX = screen.x - width / 2;
-        const boxY = screen.y - 36;
-        roundRect(ctx, boxX, boxY, width, height, 7);
-        ctx.fillStyle = "rgba(11, 31, 77, 0.92)";
-        ctx.fill();
-        ctx.fillStyle = "#ffffff";
-        ctx.fillText(label, screen.x, boxY + height / 2);
-    }
-
-    if (mapState.markers.length === 0) {
-        ctx.fillStyle = "rgba(30, 58, 138, 0.45)";
-        ctx.font = "600 15px 'Segoe UI', sans-serif";
-        ctx.fillText("Нет зарегистрированных жильцов в базе", mapState.width / 2, mapState.height / 2);
+        const message = error && error.message === "missing api key"
+            ? "Укажите ключ API в файле yandex_maps_api_key.txt в корне проекта."
+            : (error && error.message === "timeout"
+                ? "Превышено время ожидания загрузки Яндекс.Карт. Проверьте интернет-соединение."
+                : "Не удалось загрузить Яндекс.Карты. Проверьте ключ API и подключение к интернету.");
+        setMapStatus("Ошибка загрузки", "is-error");
+        showMapError(message);
     }
 }
