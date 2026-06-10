@@ -9,7 +9,7 @@ from app.models.users import User
 from app.models.bills import ServiceType, Meter, MeterReading
 from app.security import get_password_hash
 from app.routers import auth, bills as bills_router, analytics, forecast, admin
-from app.config import YANDEX_MAPS_API_KEY
+from app.config import YANDEX_MAPS_API_KEY, YANDEX_GEOCODER_API_KEY
 
 INITIAL_SERVICES = [
     {"name": "Холодное водоснабжение", "unit": "м³"},
@@ -183,4 +183,7 @@ def route_dashboard():
 
 @app.get("/api/config")
 def get_public_config():
-    return {"yandex_maps_api_key": YANDEX_MAPS_API_KEY}
+    return {
+        "yandex_maps_api_key": YANDEX_MAPS_API_KEY,
+        "yandex_geocoder_api_key": YANDEX_GEOCODER_API_KEY,
+    }

@@ -1,22 +1,27 @@
 const API_URL = "";
 const BLUE_SCALE = ["#0b1f4d", "#1e40af", "#1d4ed8", "#2563eb", "#3b82f6", "#0ea5e9", "#60a5fa", "#93c5fd"];
 
-let yandexApiKey = "";
+let yandexMapsApiKey = "";
+let yandexGeocoderApiKey = "";
 let yandexConfigLoaded = false;
 
 async function loadPublicConfig() {
-    if (yandexConfigLoaded) return yandexApiKey;
+    if (yandexConfigLoaded) {
+        return { mapsKey: yandexMapsApiKey, geocoderKey: yandexGeocoderApiKey };
+    }
     try {
         const response = await fetch(`${API_URL}/api/config`);
         if (response.ok) {
             const config = await response.json();
-            yandexApiKey = String(config.yandex_maps_api_key || "").trim();
+            yandexMapsApiKey = String(config.yandex_maps_api_key || "").trim();
+            yandexGeocoderApiKey = String(config.yandex_geocoder_api_key || "").trim();
         }
     } catch (error) {
-        yandexApiKey = "";
+        yandexMapsApiKey = "";
+        yandexGeocoderApiKey = "";
     }
     yandexConfigLoaded = true;
-    return yandexApiKey;
+    return { mapsKey: yandexMapsApiKey, geocoderKey: yandexGeocoderApiKey };
 }
 
 function authHeaders(json) {
@@ -812,11 +817,11 @@ function hideMapError() {
 }
 
 function loadYandexMaps(timeoutMs) {
-    return loadPublicConfig().then(apiKey => {
-        if (!apiKey) {
+    return loadPublicConfig().then(({ mapsKey }) => {
+        if (!mapsKey) {
             return Promise.reject(new Error("missing api key"));
         }
-        const scriptUrl = "https://api-maps.yandex.ru/2.1/?apikey=" + encodeURIComponent(apiKey) + "&lang=ru_RU";
+        const scriptUrl = "https://api-maps.yandex.ru/2.1/?apikey=" + encodeURIComponent(mapsKey) + "&lang=ru_RU";
         return new Promise((resolve, reject) => {
             let settled = false;
             const finish = (callback, argument) => {
@@ -869,8 +874,30 @@ function offsetCenter(user) {
     return [SAMARA_CENTER[0] + deltaLat, SAMARA_CENTER[1] + deltaLng];
 }
 
-async function resolveUserCoords(ymaps, user) {
+async function geocodeViaHttp(query, apiKey) {
+    if (!apiKey) return null;
+    try {
+        const url = "https://geocode-maps.yandex.ru/1.x/?apikey=" + encodeURIComponent(apiKey)
+            + "&geocode=" + encodeURIComponent(query)
+            + "&format=json&results=1";
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const data = await response.json();
+        const member = data.response?.GeoObjectCollection?.featureMember?.[0];
+        const pos = member?.GeoObject?.Point?.pos;
+        if (!pos) return null;
+        const parts = pos.split(" ").map(Number);
+        return [parts[1], parts[0]];
+    } catch (error) {
+        void error;
+        return null;
+    }
+}
+
+async function resolveUserCoords(ymaps, user, geocoderKey) {
     const query = "Самара, " + composeAddress(user);
+    const httpCoords = await geocodeViaHttp(query, geocoderKey);
+    if (httpCoords) return httpCoords;
     try {
         const result = await ymaps.geocode(query, { results: 1 });
         const geoObject = result.geoObjects.get(0);
@@ -929,8 +956,9 @@ async function renderYandexMap(ymaps, users) {
         return;
     }
 
+    const { geocoderKey } = await loadPublicConfig();
     const placemarks = await Promise.all(list.map(async user => {
-        const coords = await resolveUserCoords(ymaps, user);
+        const coords = await resolveUserCoords(ymaps, user, geocoderKey);
         return buildUserPlacemark(ymaps, user, coords);
     }));
 
@@ -961,7 +989,7 @@ async function initResidentsMap(users) {
         setMapStatus("Яндекс.Карты", "is-online");
     } catch (error) {
         const message = error && error.message === "missing api key"
-            ? "Укажите ключ API в файле yandex_maps_api_key.txt в корне проекта."
+            ? "Укажите ключ JavaScript API в файле yandex_maps_api_key.txt в корне проекта."
             : (error && error.message === "timeout"
                 ? "Превышено время ожидания загрузки Яндекс.Карт. Проверьте интернет-соединение."
                 : "Не удалось загрузить Яндекс.Карты. Проверьте ключ API и подключение к интернету.");

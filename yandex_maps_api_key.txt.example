@@ -1,4 +1,2 @@
-Вставьте сюда ключ JavaScript API Яндекс.Карт (одной строкой, без кавычек).
-Получить ключ: https://developer.tech.yandex.ru/ → «JavaScript API и HTTP Геокодер».
-
-Скопируйте этот файл как yandex_maps_api_key.txt и замените этот текст на ключ.
+Ключ JavaScript API Яндекс.Карт (одной строкой).
+Скопируйте этот файл как yandex_maps_api_key.txt и вставьте ключ сюда.
