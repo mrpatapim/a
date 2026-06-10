@@ -1,6 +1,23 @@
 const API_URL = "";
-const YANDEX_API_KEY = "";
 const BLUE_SCALE = ["#0b1f4d", "#1e40af", "#1d4ed8", "#2563eb", "#3b82f6", "#0ea5e9", "#60a5fa", "#93c5fd"];
+
+let yandexApiKey = "";
+let yandexConfigLoaded = false;
+
+async function loadPublicConfig() {
+    if (yandexConfigLoaded) return yandexApiKey;
+    try {
+        const response = await fetch(`${API_URL}/api/config`);
+        if (response.ok) {
+            const config = await response.json();
+            yandexApiKey = String(config.yandex_maps_api_key || "").trim();
+        }
+    } catch (error) {
+        yandexApiKey = "";
+    }
+    yandexConfigLoaded = true;
+    return yandexApiKey;
+}
 
 function authHeaders(json) {
     const token = localStorage.getItem("token");
@@ -70,6 +87,9 @@ function switchView(viewId) {
     if (targetView) targetView.classList.add("active");
     const triggeredBtn = document.querySelector(`[onclick="switchView('${viewId}')"]`);
     if (triggeredBtn) triggeredBtn.classList.add("active");
+    if (viewId === "view-admin") {
+        setTimeout(() => resizeYandexMap(), 120);
+    }
 }
 
 function downloadCSV(csvContent, filename) {
@@ -739,38 +759,65 @@ const SAMARA_LL_INDEX = {};
 
 let yandexMapInstance = null;
 let samaraUsersCache = [];
+let yandexResizeBound = false;
+
+function bindYandexResize() {
+    if (yandexResizeBound) return;
+    yandexResizeBound = true;
+    window.addEventListener("resize", () => resizeYandexMap());
+}
+
+function resizeYandexMap() {
+    if (!yandexMapInstance) return;
+    try {
+        yandexMapInstance.container.fitToViewport();
+    } catch (error) {
+        void error;
+    }
+}
 
 function loadYandexMaps(timeoutMs) {
-    return new Promise((resolve, reject) => {
-        let settled = false;
-        const finish = (callback, argument) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            callback(argument);
-        };
-        const timer = setTimeout(() => finish(reject, new Error("timeout")), timeoutMs);
-        const ready = () => {
-            if (window.ymaps && window.ymaps.Map) {
-                window.ymaps.ready(() => finish(resolve, window.ymaps));
-            } else {
-                finish(reject, new Error("ymaps unavailable"));
+    return loadPublicConfig().then(apiKey => {
+        if (!apiKey) {
+            return Promise.reject(new Error("missing api key"));
+        }
+        const scriptUrl = "https://api-maps.yandex.ru/2.1/?apikey=" + encodeURIComponent(apiKey) + "&lang=ru_RU";
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const finish = (callback, argument) => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                callback(argument);
+            };
+            const timer = setTimeout(() => finish(reject, new Error("timeout")), timeoutMs);
+            const ready = () => {
+                if (window.ymaps && window.ymaps.Map) {
+                    window.ymaps.ready(() => finish(resolve, window.ymaps));
+                } else {
+                    finish(reject, new Error("ymaps unavailable"));
+                }
+            };
+            let script = document.getElementById("yandex-maps-sdk");
+            if (script && script.getAttribute("data-src") !== scriptUrl) {
+                script.remove();
+                script = null;
             }
-        };
-        if (window.ymaps && window.ymaps.Map) {
-            ready();
-            return;
-        }
-        let script = document.getElementById("yandex-maps-sdk");
-        if (!script) {
-            script = document.createElement("script");
-            script.id = "yandex-maps-sdk";
-            script.src = "https://api-maps.yandex.ru/2.1/?lang=ru_RU" + (YANDEX_API_KEY ? "&apikey=" + encodeURIComponent(YANDEX_API_KEY) : "");
-            script.async = true;
-            document.head.appendChild(script);
-        }
-        script.addEventListener("load", ready);
-        script.addEventListener("error", () => finish(reject, new Error("script error")));
+            if (window.ymaps && window.ymaps.Map && script && script.getAttribute("data-src") === scriptUrl) {
+                ready();
+                return;
+            }
+            if (!script) {
+                script = document.createElement("script");
+                script.id = "yandex-maps-sdk";
+                script.src = scriptUrl;
+                script.setAttribute("data-src", scriptUrl);
+                script.async = true;
+                document.head.appendChild(script);
+            }
+            script.addEventListener("load", ready, { once: true });
+            script.addEventListener("error", () => finish(reject, new Error("script error")), { once: true });
+        });
     });
 }
 
@@ -807,6 +854,9 @@ function renderYandexMap(ymaps, users) {
         controls: ["zoomControl", "typeSelector", "fullscreenControl"]
     }, { suppressMapOpenBlock: true });
 
+    bindYandexResize();
+    resizeYandexMap();
+
     (users || []).forEach(user => {
         const direct = latlngForUser(user);
         if (direct) {
@@ -823,6 +873,7 @@ function renderYandexMap(ymaps, users) {
 
     setTimeout(() => {
         if (!yandexMapInstance) return;
+        resizeYandexMap();
         try {
             const bounds = yandexMapInstance.geoObjects.getBounds();
             if (bounds) yandexMapInstance.setBounds(bounds, { checkZoomRange: true, zoomMargin: 45 });
@@ -888,6 +939,15 @@ async function initSamaraMap(users) {
         setMapSource("yandex");
     } catch (error) {
         setMapSource("offline");
+        if (status) {
+            if (error && error.message === "missing api key") {
+                status.textContent = "Нет ключа API — офлайн-карта";
+            } else if (error && error.message === "timeout") {
+                status.textContent = "Таймаут Яндекс.Карт — офлайн-карта";
+            } else {
+                status.textContent = "Оффлайн-резерв (нет интернета)";
+            }
+        }
     }
 }
 
