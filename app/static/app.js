@@ -816,49 +816,66 @@ function hideMapError() {
     if (overlay) overlay.style.display = "none";
 }
 
+function waitForYmapsApi(timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const started = Date.now();
+        const tick = () => {
+            if (window.ymaps && typeof window.ymaps.ready === "function") {
+                window.ymaps.ready(() => {
+                    if (window.ymaps && window.ymaps.Map) resolve(window.ymaps);
+                    else reject(new Error("ymaps unavailable"));
+                });
+                return;
+            }
+            if (Date.now() - started >= timeoutMs) {
+                reject(new Error("timeout"));
+                return;
+            }
+            setTimeout(tick, 50);
+        };
+        tick();
+    });
+}
+
+function ensureYandexScript(scriptUrl) {
+    return new Promise((resolve, reject) => {
+        let script = document.getElementById("yandex-maps-sdk");
+        if (script && script.getAttribute("data-src") !== scriptUrl) {
+            script.remove();
+            script = null;
+            delete window.ymaps;
+        }
+        if (window.ymaps && window.ymaps.Map && script && script.getAttribute("data-src") === scriptUrl) {
+            resolve();
+            return;
+        }
+        if (!script) {
+            script = document.createElement("script");
+            script.id = "yandex-maps-sdk";
+            script.src = scriptUrl;
+            script.setAttribute("data-src", scriptUrl);
+            script.async = true;
+            script.addEventListener("load", () => resolve(), { once: true });
+            script.addEventListener("error", () => reject(new Error("script error")), { once: true });
+            document.head.appendChild(script);
+            return;
+        }
+        if (script.readyState === "complete" || script.readyState === "loaded") {
+            resolve();
+            return;
+        }
+        script.addEventListener("load", () => resolve(), { once: true });
+        script.addEventListener("error", () => reject(new Error("script error")), { once: true });
+    });
+}
+
 function loadYandexMaps(timeoutMs) {
     return loadPublicConfig().then(({ mapsKey }) => {
         if (!mapsKey) {
             return Promise.reject(new Error("missing api key"));
         }
         const scriptUrl = "https://api-maps.yandex.ru/2.1/?apikey=" + encodeURIComponent(mapsKey) + "&lang=ru_RU";
-        return new Promise((resolve, reject) => {
-            let settled = false;
-            const finish = (callback, argument) => {
-                if (settled) return;
-                settled = true;
-                clearTimeout(timer);
-                callback(argument);
-            };
-            const timer = setTimeout(() => finish(reject, new Error("timeout")), timeoutMs);
-            const ready = () => {
-                if (window.ymaps && window.ymaps.Map) {
-                    window.ymaps.ready(() => finish(resolve, window.ymaps));
-                } else {
-                    finish(reject, new Error("ymaps unavailable"));
-                }
-            };
-            let script = document.getElementById("yandex-maps-sdk");
-            if (script && script.getAttribute("data-src") !== scriptUrl) {
-                script.remove();
-                script = null;
-                delete window.ymaps;
-            }
-            if (window.ymaps && window.ymaps.Map && script && script.getAttribute("data-src") === scriptUrl) {
-                ready();
-                return;
-            }
-            if (!script) {
-                script = document.createElement("script");
-                script.id = "yandex-maps-sdk";
-                script.src = scriptUrl;
-                script.setAttribute("data-src", scriptUrl);
-                script.async = true;
-                document.head.appendChild(script);
-            }
-            script.addEventListener("load", ready, { once: true });
-            script.addEventListener("error", () => finish(reject, new Error("script error")), { once: true });
-        });
+        return ensureYandexScript(scriptUrl).then(() => waitForYmapsApi(timeoutMs));
     });
 }
 
@@ -874,38 +891,17 @@ function offsetCenter(user) {
     return [SAMARA_CENTER[0] + deltaLat, SAMARA_CENTER[1] + deltaLng];
 }
 
-async function geocodeViaHttp(query, apiKey) {
-    if (!apiKey) return null;
-    try {
-        const url = "https://geocode-maps.yandex.ru/1.x/?apikey=" + encodeURIComponent(apiKey)
-            + "&geocode=" + encodeURIComponent(query)
-            + "&format=json&results=1";
-        const response = await fetch(url);
-        if (!response.ok) return null;
-        const data = await response.json();
-        const member = data.response?.GeoObjectCollection?.featureMember?.[0];
-        const pos = member?.GeoObject?.Point?.pos;
-        if (!pos) return null;
-        const parts = pos.split(" ").map(Number);
-        return [parts[1], parts[0]];
-    } catch (error) {
-        void error;
-        return null;
+async function resolveUserCoords(user) {
+    const streetCoords = latlngForUser(user);
+    if (streetCoords) {
+        const house = parseInt(String(user.house || "").replace(/\D/g, ""), 10) || 0;
+        const apartment = parseInt(String(user.apartment || "").replace(/\D/g, ""), 10) || 0;
+        const hash = hashString((user.street || "") + "|" + (user.username || ""));
+        const deltaLat = (((house * 17 + apartment * 5 + hash) % 40) - 20) / 10000;
+        const deltaLng = (((house * 11 + apartment * 3 + (hash >> 3)) % 40) - 20) / 10000;
+        return [streetCoords[0] + deltaLat, streetCoords[1] + deltaLng];
     }
-}
-
-async function resolveUserCoords(ymaps, user, geocoderKey) {
-    const query = "Самара, " + composeAddress(user);
-    const httpCoords = await geocodeViaHttp(query, geocoderKey);
-    if (httpCoords) return httpCoords;
-    try {
-        const result = await ymaps.geocode(query, { results: 1 });
-        const geoObject = result.geoObjects.get(0);
-        if (geoObject) return geoObject.geometry.getCoordinates();
-    } catch (error) {
-        void error;
-    }
-    return latlngForUser(user) || offsetCenter(user);
+    return offsetCenter(user);
 }
 
 function buildUserPlacemark(ymaps, user, coords) {
@@ -956,9 +952,8 @@ async function renderYandexMap(ymaps, users) {
         return;
     }
 
-    const { geocoderKey } = await loadPublicConfig();
     const placemarks = await Promise.all(list.map(async user => {
-        const coords = await resolveUserCoords(ymaps, user, geocoderKey);
+        const coords = await resolveUserCoords(user);
         return buildUserPlacemark(ymaps, user, coords);
     }));
 
@@ -980,20 +975,35 @@ async function renderYandexMap(ymaps, users) {
     });
 }
 
+function mapErrorMessage(error) {
+    if (!error || !error.message) {
+        return "Не удалось загрузить Яндекс.Карты. Проверьте ключ API и подключение к интернету.";
+    }
+    if (error.message === "missing api key") {
+        return "Укажите YANDEX_MAPS_API_KEY в файле .env (см. .env.example).";
+    }
+    if (error.message === "timeout") {
+        return "Превышено время ожидания загрузки Яндекс.Карт. Проверьте интернет-соединение.";
+    }
+    if (error.message === "script error") {
+        return "Скрипт Яндекс.Карт не загрузился. Проверьте YANDEX_MAPS_API_KEY и ограничения по домену в кабинете разработчика.";
+    }
+    if (error.message === "ymaps unavailable") {
+        return "API Яндекс.Карт недоступен. Проверьте ключ JavaScript API и разрешённые домены (localhost).";
+    }
+    return "Ошибка карты: " + error.message;
+}
+
 async function initResidentsMap(users) {
     setMapStatus("Загрузка Яндекс.Карт...", "");
     hideMapError();
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     try {
-        const ymaps = await loadYandexMaps(15000);
+        const ymaps = await loadYandexMaps(20000);
         await renderYandexMap(ymaps, users || []);
         setMapStatus("Яндекс.Карты", "is-online");
     } catch (error) {
-        const message = error && error.message === "missing api key"
-            ? "Укажите YANDEX_MAPS_API_KEY в файле .env (см. .env.example)."
-            : (error && error.message === "timeout"
-                ? "Превышено время ожидания загрузки Яндекс.Карт. Проверьте интернет-соединение."
-                : "Не удалось загрузить Яндекс.Карты. Проверьте ключ API и подключение к интернету.");
         setMapStatus("Ошибка загрузки", "is-error");
-        showMapError(message);
+        showMapError(mapErrorMessage(error));
     }
 }
